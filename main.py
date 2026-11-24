@@ -9,6 +9,8 @@ for the sealed scorer and the house judge.
 """
 
 from pathlib import Path
+import os
+import tempfile
 
 ROAST = (
     "My agent entered seventy bounties, won zero dollars, "
@@ -27,13 +29,40 @@ def validated_line(text: str) -> str:
     return line
 
 
+def write_entry(line: str, entry_path: Path) -> None:
+    """Write the validated line atomically and verify it round-trips.
+
+    A direct write can leave a truncated entry.txt if the process is
+    interrupted mid-write, and the sealed scorer would then see an
+    invalid entry. Writing to a temp file in the same directory,
+    flushing it to disk, and renaming it over the target makes the
+    replacement all-or-nothing; reading the file back proves the
+    bytes on disk are exactly the line we validated.
+    """
+    out_dir = entry_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=out_dir, prefix=".entry-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(line)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(tmp_name, 0o644)
+        os.replace(tmp_name, entry_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    if entry_path.read_text(encoding="utf-8") != line:
+        raise ValueError("entry.txt on disk does not match the validated roast")
+
+
 def main() -> None:
     line = validated_line(ROAST)
-    out_dir = Path("/output")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    entry_path = out_dir / "entry.txt"
-    entry_path.write_text(line, encoding="utf-8")
-    entry_path.chmod(0o644)
+    entry_path = Path("/output") / "entry.txt"
+    write_entry(line, entry_path)
     print(f"wrote {len(line)} chars to {entry_path}")
 
 
